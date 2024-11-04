@@ -20,13 +20,16 @@ import (
 	"strings"
 
 	"github.com/GoogleContainerTools/kpt/pkg/live"
+	"github.com/elliotchance/orderedmap/v2"
 	"golang.org/x/net/context"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"kpt.dev/configsync/pkg/api/configsync"
 	"kpt.dev/configsync/pkg/core"
 	"kpt.dev/configsync/pkg/metadata"
+	"kpt.dev/configsync/pkg/remediator/queue"
 	"kpt.dev/configsync/pkg/status"
+	"kpt.dev/configsync/pkg/syncer/reconcile"
 	syncerreconcile "kpt.dev/configsync/pkg/syncer/reconcile"
 	"sigs.k8s.io/cli-utils/pkg/object"
 	"sigs.k8s.io/cli-utils/pkg/object/mutation"
@@ -37,6 +40,7 @@ func partitionObjs(objs []client.Object) ([]client.Object, []client.Object) {
 	var enabled []client.Object
 	var disabled []client.Object
 	for _, obj := range objs {
+		// i.e. managed by Config Sync
 		if obj.GetAnnotations()[metadata.ResourceManagementKey] == metadata.ResourceManagementDisabled {
 			disabled = append(disabled, obj)
 		} else {
@@ -44,6 +48,35 @@ func partitionObjs(objs []client.Object) ([]client.Object, []client.Object) {
 		}
 	}
 	return enabled, disabled
+}
+
+// handleIgnoredObjects gets the cached cluster state of all mutation-ignored objects that are declared and applies the CS metadata on top of them
+// prior to sending them to the applier
+// Returns all objects that will be applied
+func handleIgnoredObjects(declared []client.Object, ignoredCache *orderedmap.OrderedMap[core.ID, client.Object]) []client.Object {
+	var allObjs []client.Object
+
+	for _, dObj := range declared {
+		cachedObj, found := ignoredCache.Get(core.IDOf(dObj))
+		_, deleted := cachedObj.(*queue.Deleted)
+
+		if found && !deleted {
+			cachedCopy, _ := client.Object.DeepCopyObject(cachedObj).(client.Object)
+
+			// Removes problematic fields
+			csAnnotations, csLabels := metadata.GetConfigSyncMetadata(dObj)
+			core.AddAnnotations(cachedCopy, csAnnotations)
+			core.AddLabels(cachedCopy, csLabels)
+			uObj, _ := reconcile.AsUnstructuredSanitized(cachedCopy)
+			unstructured.RemoveNestedField(uObj.Object, "metadata", "managedFields")
+
+			allObjs = append(allObjs, uObj)
+		} else {
+			allObjs = append(allObjs, dObj)
+		}
+	}
+
+	return allObjs
 }
 
 func toUnstructured(objs []client.Object) ([]*unstructured.Unstructured, status.MultiError) {

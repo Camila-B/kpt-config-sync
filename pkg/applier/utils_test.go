@@ -17,14 +17,21 @@ package applier
 import (
 	"testing"
 
+	"github.com/elliotchance/orderedmap/v2"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"kpt.dev/configsync/pkg/api/configsync"
 	"kpt.dev/configsync/pkg/core"
 	"kpt.dev/configsync/pkg/core/k8sobjects"
+	"kpt.dev/configsync/pkg/kinds"
+	"kpt.dev/configsync/pkg/remediator/queue"
+	"kpt.dev/configsync/pkg/syncer/reconcile"
 	"kpt.dev/configsync/pkg/syncer/syncertest"
 	"sigs.k8s.io/cli-utils/pkg/object"
+	"sigs.k8s.io/cli-utils/pkg/testutil"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -180,4 +187,112 @@ func TestGetObjectSize(t *testing.T) {
 	if size > 1000 {
 		t.Fatalf("An empty inventory object shouldn't have a large size: %d", size)
 	}
+}
+
+// TODO: Make sure all ok
+func TestHandleIgnoredObjects(t *testing.T) {
+	testcases := []struct {
+		name         string
+		declaredObjs []client.Object
+		ignoredCache *orderedmap.OrderedMap[core.ID, client.Object]
+		expectedObjs []client.Object
+	}{
+		{
+			name: "all objects with the ignore mutation annotation and with nothing in the cache",
+			declaredObjs: []client.Object{
+				fakeNamespace(
+					syncertest.IgnoreMutationAnnotation),
+			},
+			ignoredCache: createIgnoredCache(),
+			expectedObjs: []client.Object{
+				fakeNamespace(
+					syncertest.IgnoreMutationAnnotation),
+			},
+		},
+		{
+			name: "all with ignore mutation and also in the cache",
+			declaredObjs: []client.Object{
+				fakeNamespace(),
+			},
+			ignoredCache: createIgnoredCache(
+				fakeCachedNamespace(),
+			),
+			expectedObjs: []client.Object{
+				sanitizeObject(fakeNamespace(
+					syncertest.IgnoreMutationAnnotation)),
+			},
+		},
+		{
+			name: "A managed object is now declared with the \"ignore mutation\" annotation in the source repo.",
+			declaredObjs: []client.Object{
+				fakeNamespace(syncertest.IgnoreMutationAnnotation),
+			},
+			ignoredCache: createIgnoredCache(fakeCachedNamespace()),
+			expectedObjs: []client.Object{
+				sanitizeObject(fakeNamespace(syncertest.IgnoreMutationAnnotation)),
+			},
+		},
+		{
+			name: "An mutation-ignored object that was previously deleted",
+			declaredObjs: []client.Object{
+				fakeNamespace(
+					syncertest.IgnoreMutationAnnotation),
+			},
+			ignoredCache: createIgnoredCache(
+				&queue.Deleted{
+					Object: fakeCachedNamespace(syncertest.IgnoreMutationAnnotation),
+				}),
+			expectedObjs: []client.Object{
+				fakeNamespace(syncertest.IgnoreMutationAnnotation),
+			},
+		},
+		{
+			name: "A namespace that was previously not marked as ignore is now declared",
+			declaredObjs: []client.Object{
+				k8sobjects.NamespaceObject("bookstore", syncertest.IgnoreMutationAnnotation),
+			},
+			ignoredCache: createIgnoredCache(
+				k8sobjects.NamespaceObject("bookstore", core.Annotation("season", "summer"))),
+			expectedObjs: []client.Object{
+				sanitizeObject(k8sobjects.NamespaceObject("bookstore", syncertest.IgnoreMutationAnnotation, core.Annotation("season", "summer"))),
+			},
+		},
+	}
+
+	for _, tc := range testcases {
+		t.Run(tc.name, func(t *testing.T) {
+			//TODO: Assert items were not changed in cache?
+			allObjs := handleIgnoredObjects(tc.declaredObjs, tc.ignoredCache)
+			testutil.AssertEqual(t, tc.expectedObjs, allObjs)
+		})
+	}
+}
+
+func createIgnoredCache(objs ...client.Object) *orderedmap.OrderedMap[core.ID, client.Object] {
+	cache := orderedmap.NewOrderedMap[core.ID, client.Object]()
+
+	for _, obj := range objs {
+		cache.Set(core.IDOf(obj), obj)
+	}
+	return cache
+}
+
+func fakeCachedNamespace(opts ...core.MetaMutator) client.Object {
+	o := k8sobjects.NamespaceObject("test-ns", opts...)
+	core.Scheme.Default(o)
+	o.SetManagedFields([]metav1.ManagedFieldsEntry{{Manager: "foo"}})
+	uObj, _ := reconcile.AsUnstructured(o)
+	return uObj
+}
+
+func fakeNamespace(opts ...core.MetaMutator) *unstructured.Unstructured {
+	return k8sobjects.UnstructuredObject(kinds.Namespace(), opts...)
+}
+
+func sanitizeObject(obj client.Object) client.Object {
+	//TODO: Handle error
+	uObj, _ := reconcile.AsUnstructuredSanitized(obj)
+
+	unstructured.RemoveNestedField(uObj.Object, "metadata", "managedFields")
+	return uObj
 }

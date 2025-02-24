@@ -52,6 +52,7 @@ import (
 	syncerFake "kpt.dev/configsync/pkg/syncer/syncertest/fake"
 	"kpt.dev/configsync/pkg/testing/discoverytest"
 	"kpt.dev/configsync/pkg/testing/openapitest"
+	"kpt.dev/configsync/pkg/testing/testerrors"
 	"kpt.dev/configsync/pkg/util/discovery"
 	"kpt.dev/configsync/pkg/validate/raw/validate"
 	"sigs.k8s.io/cli-utils/pkg/common"
@@ -1361,9 +1362,7 @@ func TestUnstructured(t *testing.T) {
 			fakeClient := syncerFake.NewClient(t, s, tc.onClusterObjects...)
 
 			got, errs := Unstructured(context.Background(), fakeClient, tc.objs, tc.options)
-			if !errors.Is(errs, tc.wantErrs) {
-				t.Errorf("got Unstructured() error %v; want %v", errs, tc.wantErrs)
-			}
+			testerrors.AssertEqual(t, tc.wantErrs, errs)
 			testutil.AssertEqual(t, tc.want, got)
 
 			updatedDynamicNSSelectorEnabled, err := dynamicNSSelectorEnabled(fakeClient)

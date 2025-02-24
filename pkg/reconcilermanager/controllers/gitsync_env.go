@@ -350,7 +350,6 @@ func gitSyncEnvs(_ context.Context, opts options) []corev1.EnvVar {
 			})
 		}
 	default:
-		// TODO b/168553377 Return error while setting up gitSyncData.
 		klog.Errorf("Unrecognized secret type %s", opts.secretType)
 	}
 	return result

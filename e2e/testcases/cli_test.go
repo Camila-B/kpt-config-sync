@@ -742,15 +742,13 @@ func TestNomosHydrateAndVetDryRepos(t *testing.T) {
 			sourceFormat:    string(configsync.SourceFormatUnstructured),
 			expectedOutPath: "../testdata/hydration/compiled/helm-overlay",
 		},
-		// remote-base relies on external public helm chart, which occasionally
-		// results in flaky DNS lookups in the presubmit job
-		//{
-		//	name:            "hydrate a DRY repo with remote base",
-		//	path:            "../testdata/hydration/remote-base",
-		//	outPath:         "remote-base/compiled",
-		//	sourceFormat:    string(configsync.SourceFormatUnstructured),
-		//	expectedOutPath: "../testdata/hydration/compiled/remote-base",
-		//},
+		{
+			name:            "hydrate a DRY repo with remote base",
+			path:            "../testdata/hydration/remote-base",
+			outPath:         "remote-base/compiled",
+			sourceFormat:    string(configsync.SourceFormatUnstructured),
+			expectedOutPath: "../testdata/hydration/compiled/remote-base",
+		},
 		{
 			name:            "hydrate a DRY repo with relative path",
 			path:            "../testdata/hydration/relative-path/overlays/dev",

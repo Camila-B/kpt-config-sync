@@ -20,9 +20,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sync"
+	"strings"
 	"time"
 
 	"kpt.dev/configsync/e2e"
+	"k8s.io/klog/v2"
 	"kpt.dev/configsync/e2e/nomostest/docker"
 	"kpt.dev/configsync/e2e/nomostest/taskgroup"
 	"kpt.dev/configsync/e2e/nomostest/testing"
@@ -204,6 +206,44 @@ apiServer:
 			cluster.CreateWithWaitForReady(10*time.Minute),
 		)
 		if err == nil {
+			// Patch CoreDNS to allow external DNS resolution for tests that require it.
+			klog.InfoS("Patching CoreDNS ConfigMap for external DNS resolution...")
+
+			// Get the current CoreDNS ConfigMap's Corefile content
+			getCmd := exec.Command("kubectl", "get", "configmap", "coredns", "-n", "kube-system", "-o", "jsonpath='{.data.Corefile}'", "--kubeconfig", kcfgPath)
+			currentCorefileBytes, err := getCmd.CombinedOutput()
+			if err != nil {
+				return fmt.Errorf("failed to get current coredns corefile: %w\nOutput: %s", err, string(currentCorefileBytes))
+			}
+			currentCorefile := string(currentCorefileBytes)
+
+			// Modify the Corefile string
+			modifiedCorefile := strings.Replace(currentCorefile, "forward . /etc/resolv.conf", "forward . 8.8.8.8 8.8.4.4", 1)
+			if modifiedCorefile == currentCorefile {
+				klog.Warningf("CoreDNS Corefile did not contain 'forward . /etc/resolv.conf'. Attempting to insert forwarding rule before 'loop'. Corefile:\n%s", currentCorefile)
+				// Attempt to insert before "loop"
+				modifiedCorefile = strings.Replace(currentCorefile, "\n        loop", "\n        forward . 8.8.8.8 8.8.4.4\n        loop", 1)
+				if modifiedCorefile == currentCorefile {
+					return fmt.Errorf("failed to modify CoreDNS Corefile: anchor strings for patching not found. Corefile:\n%s", currentCorefile)
+				}
+			}
+
+			// Patch the ConfigMap with the new Corefile content
+			patchPayload := fmt.Sprintf("{\"data\":{\"Corefile\":%q}}", modifiedCorefile)
+			patchCmd := exec.Command("kubectl", "patch", "configmap", "coredns", "-n", "kube-system", "--type=merge", "-p", patchPayload, "--kubeconfig", kcfgPath)
+			patchOutputBytes, err := patchCmd.CombinedOutput()
+			if err != nil {
+				return fmt.Errorf("failed to patch coredns configmap: %w\nOutput: %s", err, string(patchOutputBytes))
+			}
+
+			// Delete CoreDNS pods to force them to pick up the new ConfigMap
+			deleteCmd := exec.Command("kubectl", "delete", "pods", "-n", "kube-system", "-l", "k8s-app=kube-dns", "--kubeconfig", kcfgPath, "--ignore-not-found=true")
+			deleteOutputBytes, err := deleteCmd.CombinedOutput()
+			if err != nil {
+				return fmt.Errorf("failed to delete coredns pods: %w\nOutput: %s", err, string(deleteOutputBytes))
+			}
+
+			klog.InfoS("Successfully patched CoreDNS ConfigMap and restarted pods.")
 			return nil
 		}
 	}

@@ -137,6 +137,73 @@ func TestPublicHelm(t *testing.T) {
 	nt.Must(nt.Watcher.WatchForNotFound(kinds.Deployment(), "my-wordpress", "deploy-ns"))
 }
 
+// TestPublicHelmNginx can run on both Kind and GKE clusters.
+// It tests Config Sync can pull Nginx from public Helm repo without any authentication.
+func TestPublicHelmNginx(t *testing.T) {
+	nt := nomostest.New(t, nomostesting.SyncSource,
+		ntopts.SyncWithGitSource(nomostest.DefaultRootSyncID, ntopts.Unstructured))
+
+	rs := rootSyncForNginxHelmChart(nt, nil)
+	nt.T.Log("Update RootSync to sync from a public Nginx Helm Chart with specified release namespace")
+	nt.Must(nt.KubeClient.Apply(rs))
+
+	nt.T.Log("Wait for RootSync to sync from a helm chart")
+	nt.Must(nt.WatchForAllSyncs())
+
+	nt.T.Log("Validate deployment my-nginx exists in nginx-test namespace")
+	// expectedCPURequest, expectedCPULimit, expectedMemoryRequest, expectedMemoryLimit will be the same for Autopilot and non-Autopilot
+	// as the values are set directly in the values map and not calculated based on cluster type.
+	expectedCPURequest := "50m"
+	expectedCPULimit := "100m"
+	expectedMemoryRequest := "64Mi"
+	expectedMemoryLimit := "128Mi"
+
+	if err := nt.Validate("my-nginx", "nginx-test", &appsv1.Deployment{},
+		testpredicates.HasExactlyImage("my-nginx", "docker.io/bitnami/nginx", "1.25.3", ""),
+		testpredicates.DeploymentContainerResourcesEqual(v1beta1.ContainerResourcesSpec{
+			ContainerName: "nginx", // Assuming the container name in the chart is "nginx"
+			CPURequest:    resource.MustParse(expectedCPURequest),
+			CPULimit:      resource.MustParse(expectedCPULimit),
+			MemoryRequest: resource.MustParse(expectedMemoryRequest),
+			MemoryLimit:   resource.MustParse(expectedMemoryLimit),
+		}),
+	); err != nil {
+		nt.T.Error(err)
+	}
+	if err := nt.Validate("my-nginx", "nginx-test", &corev1.Service{}); err != nil {
+		nt.T.Error(err)
+	}
+
+	if nt.T.Failed() {
+		nt.T.FailNow()
+	}
+
+	nt.T.Log("Update RootSync to sync from a public Nginx Helm Chart with deploy namespace")
+	nt.MustMergePatch(rs, `{"spec": {"helm": {"namespace": "", "deployNamespace": "nginx-test-new"}}}`)
+
+	nt.T.Log("Wait for RootSync to sync from a helm chart")
+	nt.Must(nt.WatchForAllSyncs())
+
+	nt.Must(nt.Watcher.WatchForCurrentStatus(kinds.Deployment(), "my-nginx", "nginx-test-new"))
+	nt.Must(nt.Watcher.WatchForNotFound(kinds.Deployment(), "my-nginx", "nginx-test"))
+
+	nt.T.Log("Update RootSync to sync from a public Nginx Helm Chart without specified release namespace or deploy namespace")
+	nt.MustMergePatch(rs, `{"spec": {"helm": {"namespace": "", "deployNamespace": ""}}}`)
+
+	nt.T.Log("Wait for RootSync to sync from a helm chart")
+	nt.Must(nt.WatchForAllSyncs())
+
+	nt.Must(nt.Watcher.WatchForCurrentStatus(kinds.Deployment(), "my-nginx", configsync.DefaultHelmReleaseNamespace))
+	nt.Must(nt.Watcher.WatchForNotFound(kinds.Deployment(), "my-nginx", "nginx-test-new"))
+	// Validate service and deployment in the default namespace
+	if err := nt.Validate("my-nginx", configsync.DefaultHelmReleaseNamespace, &appsv1.Deployment{}); err != nil {
+		nt.T.Error(err)
+	}
+	if err := nt.Validate("my-nginx", configsync.DefaultHelmReleaseNamespace, &corev1.Service{}); err != nil {
+		nt.T.Error(err)
+	}
+}
+
 // TestHelmWatchConfigMap can run on both Kind and GKE clusters.
 // It tests that helm-sync properly watches ConfigMaps in the RSync namespace if the RSync is created before
 // the ConfigMap.
@@ -924,6 +991,69 @@ func rootSyncForWordpressHelmChart(nt *nomostest.NT, valuesMutator func(map[stri
 				ContainerName: reconcilermanager.HelmSync,
 				MemoryRequest: resource.MustParse("512Mi"),
 				MemoryLimit:   resource.MustParse("512Mi"),
+			},
+		}
+	}
+	return rs
+}
+
+func rootSyncForNginxHelmChart(nt *nomostest.NT, valuesMutator func(map[string]interface{})) *v1beta1.RootSync {
+	chartID := registryproviders.HelmChartID{Name: "nginx", Version: "15.14.0"}
+	rs := nt.RootSyncObjectHelm(configsync.RootSyncName, chartID)
+
+	values := map[string]interface{}{
+		"image": map[string]interface{}{
+			"registry":   "docker.io",
+			"repository": "bitnami/nginx",
+			"tag":        "1.25.3", // Specific image tag
+			"pullPolicy": "IfNotPresent",
+		},
+		"service": map[string]interface{}{
+			"type": "ClusterIP",
+			"port": 80,
+		},
+		"resources": map[string]interface{}{
+			"requests": map[string]interface{}{
+				"cpu":    "50m",
+				"memory": "64Mi",
+			},
+			"limits": map[string]interface{}{
+				"cpu":    "100m",
+				"memory": "128Mi",
+			},
+		},
+	}
+	if valuesMutator != nil {
+		valuesMutator(values)
+	}
+	out, err := json.Marshal(values)
+	if err != nil {
+		nt.T.Fatal(err)
+	}
+
+	rs.Spec.Helm = &v1beta1.HelmRootSync{
+		Namespace: "nginx-test", // Initial namespace
+		HelmBase: v1beta1.HelmBase{
+			Repo:        "https://charts.bitnami.com/bitnami",
+			Chart:       chartID.Name,
+			Version:     chartID.Version,
+			ReleaseName: "my-nginx",
+			Auth:        configsync.AuthNone,
+			Values: &apiextensionsv1.JSON{
+				Raw: out,
+			},
+		},
+	}
+
+	if nt.IsGKEAutopilot {
+		nt.T.Log("Increasing memory request/limit for helm-sync on Autopilot for Nginx chart")
+		// Nginx is lighter than WordPress, so a smaller override might be sufficient,
+		// or even the default might work. Using a moderate override as a precaution.
+		rs.Spec.SafeOverride().Resources = []v1beta1.ContainerResourcesSpec{
+			{
+				ContainerName: reconcilermanager.HelmSync,
+				MemoryRequest: resource.MustParse("256Mi"), // Adjusted down from WordPress
+				MemoryLimit:   resource.MustParse("256Mi"), // Adjusted down from WordPress
 			},
 		}
 	}

@@ -44,6 +44,9 @@ const (
 var (
 	// helmCacheHome is the local filepath where helm writes local cache data
 	helmCacheHome = os.Getenv("HOME") + "/.cache/helm"
+
+	// helmExecCommand is a variable to enable mocking of helm command execution in tests.
+	helmExecCommand = exec.CommandContext
 )
 
 // Hydrator runs the helm hydration process.
@@ -241,7 +244,7 @@ func (h *Hydrator) helm(ctx context.Context, args ...string) ([]byte, error) {
 	if h.CACertFilePath != "" {
 		allArgs = append(allArgs, "--ca-file", h.CACertFilePath)
 	}
-	out, err := exec.CommandContext(ctx, "helm", allArgs...).CombinedOutput()
+	out, err := helmExecCommand(ctx, "helm", allArgs...).CombinedOutput()
 	if err != nil {
 		return out, fmt.Errorf("invoking helm: %s: %w", string(out), err)
 	}
@@ -264,6 +267,18 @@ func (h *Hydrator) registryLogin(ctx context.Context) error {
 // HelmTemplate runs helm template with args
 func (h *Hydrator) HelmTemplate(ctx context.Context) error {
 	var loggedIn bool
+
+	if h.ValuesYAML != "" {
+		// If ValuesYAML is present, a temporary file named valuesFile (chart-values.yaml)
+		// will be created in os.TempDir() by the writeValuesPath function (called via templateArgs).
+		// Defer its removal to ensure cleanup after the helm command is executed or if an error occurs.
+		temporaryValuesPath := filepath.Join(os.TempDir(), valuesFile)
+		defer func() {
+			if err := os.Remove(temporaryValuesPath); err != nil && !os.IsNotExist(err) {
+				klog.Warningf("failed to remove temporary helm values file %q: %v", temporaryValuesPath, err)
+			}
+		}()
+	}
 
 	if isRange(h.Version) {
 		klog.Infof("version range %s detected, fetching chart version\n", h.Version)

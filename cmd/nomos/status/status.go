@@ -16,6 +16,7 @@ package status
 
 import (
 	"context"
+	"encoding/json" // Added for JSON marshalling
 	"errors"
 	"fmt"
 	"io"
@@ -49,6 +50,7 @@ var (
 
 func init() {
 	flags.AddContexts(Cmd)
+	flags.AddOutputFormat(Cmd, "text") // Add the new format flag
 	Cmd.Flags().DurationVar(&flags.ClientTimeout, "timeout", restconfig.DefaultTimeout, "Sets the timeout for connecting to each cluster. Defaults to 15 seconds. Example: --timeout=30s")
 	Cmd.Flags().DurationVar(&pollingInterval, "poll", 0*time.Second, "Continuously polls for status updates at the specified interval. If not provided, the command runs only once. Example: --poll=30s for polling every 30 seconds")
 	Cmd.Flags().StringVar(&namespace, "namespace", "", "Filters the status output by the specified RootSync or RepoSync namespace. If not provided, displays status for all RootSync and RepoSync objects.")
@@ -165,33 +167,47 @@ func printStatus(ctx context.Context, writer *tabwriter.Writer, clientMap map[st
 	// First build up a map of all the states to display.
 	stateMap, monoRepoClusters := clusterStates(ctx, clientMap)
 
-	// Log a notice for the detected clusters that are running in the mono-repo mode.
-	util.MonoRepoNotice(writer, monoRepoClusters...)
+	if flags.StatusFormat == "json" {
+		// JSON output
+		jsonOutput, err := json.MarshalIndent(stateMap, "", "  ")
+		if err != nil {
+			klog.Errorf("Error marshalling status to JSON: %v", err)
+			// Optionally, print an error to the writer as well, though klog handles logging.
+			// writer.Write([]byte(fmt.Sprintf("Error marshalling status to JSON: %v\n", err)))
+			return // Avoid further processing if marshalling fails
+		}
+		writer.Write(jsonOutput)
+		writer.Write([]byte("\n")) // Add a newline for better formatting in terminals
+		writer.Flush()
+	} else {
+		// Text output (existing logic)
+		// Log a notice for the detected clusters that are running in the mono-repo mode.
+		util.MonoRepoNotice(writer, monoRepoClusters...)
 
-	currentContext, err := restconfig.CurrentContextName()
-	if err != nil {
-		fmt.Printf("Failed to get current context name with err: %v\n", err)
-	}
+		currentContext, err := restconfig.CurrentContextName()
+		if err != nil {
+			// Using klog for errors that are not direct user feedback but operational issues.
+			klog.Warningf("Failed to get current context name: %v", err)
+		}
 
-	// Now we write everything at once. Processing and then printing helps avoid screen strobe.
+		// Now we write everything at once. Processing and then printing helps avoid screen strobe.
+		if pollingInterval > 0 && flags.StatusFormat == "text" {
+			// Clear previous output and flush it to avoid messing up column widths.
+			clearTerminal(writer)
+			writer.Flush()
+		}
 
-	if pollingInterval > 0 {
-		// Clear previous output and flush it to avoid messing up column widths.
-		clearTerminal(writer)
+		// Print status for each cluster.
+		for _, name := range names {
+			state := stateMap[name]
+			if name == currentContext {
+				// Prepend an asterisk for the users' current context
+				state.Ref = "*" + name
+			}
+			state.printRows(writer)
+		}
 		writer.Flush()
 	}
-
-	// Print status for each cluster.
-	for _, name := range names {
-		state := stateMap[name]
-		if name == currentContext {
-			// Prepend an asterisk for the users' current context
-			state.Ref = "*" + name
-		}
-		state.printRows(writer)
-	}
-
-	writer.Flush()
 }
 
 // clearTerminal executes an OS-specific command to clear all output on the terminal.

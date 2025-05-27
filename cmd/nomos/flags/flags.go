@@ -67,8 +67,11 @@ var (
 	// SourceFormat indicates the format of the Git repository.
 	SourceFormat string
 
-	// OutputFormat is the format of output.
+	// OutputFormat is the format of output for general commands (e.g. hydrate).
 	OutputFormat string
+
+	// StatusFormat is the format of the `nomos status` command output.
+	StatusFormat string
 
 	// ClientTimeout is a flag value to specify how long to wait before timeout of client connection.
 	ClientTimeout time.Duration
@@ -113,10 +116,12 @@ func AddSourceFormat(cmd *cobra.Command) {
 			configsync.SourceFormatHierarchy, configsync.SourceFormatUnstructured))
 }
 
-// AddOutputFormat adds the --format flag.
-func AddOutputFormat(cmd *cobra.Command) {
-	cmd.Flags().StringVar(&OutputFormat, "format", "yaml",
-		`Output format. Accepts 'yaml' and 'json'.`)
+// AddOutputFormat adds the --format flag to the given command.
+// It associates the flag with the StatusFormat variable and uses the
+// provided defaultValue. The help message indicates 'text' and 'json' as options.
+func AddOutputFormat(cmd *cobra.Command, defaultValue string) {
+	cmd.Flags().StringVar(&StatusFormat, "format", defaultValue,
+		`Output format. Accepts 'text' and 'json'.`)
 }
 
 // AddAPIServerTimeout adds the --api-server-timeout flag

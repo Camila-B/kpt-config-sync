@@ -482,3 +482,64 @@ func TestKubectlAddAnnotation(t *testing.T) {
 	nt.Must(nt.Watcher.WatchObject(kinds.Namespace(), "bookstore", "",
 		testwatcher.WatchPredicates(testpredicates.HasAnnotation("season", "summer"))))
 }
+
+// TestIgnoreMutationBySecondController tests that when a second controller updates a
+// field on an object that was applied by Config Sync with the
+// `client.lifecycle.config.k8s.io/mutation: ignore` annotation, Config Sync
+// does not revert the change.
+func TestIgnoreMutationBySecondController(t *testing.T) {
+	nt := nomostest.New(t, nomostesting.DriftControl,
+		ntopts.SyncWithGitSource(nomostest.DefaultRootSyncID, ntopts.Unstructured))
+	rootSyncGitRepo := nt.SyncSourceGitReadWriteRepository(nomostest.DefaultRootSyncID)
+
+	// Step 2: Set up the initial state
+	nt.T.Log("Add a namespace with ignore mutation annotation and initial label foo:bar")
+	nsObject := k8sobjects.NamespaceObject("test-namespace",
+		core.Annotation(metadata.LifecycleMutationAnnotation, metadata.IgnoreMutation),
+		core.Label("foo", "bar"))
+	nt.Must(rootSyncGitRepo.Add("acme/ns-test-ignore-mutation.yaml", nsObject))
+	nt.Must(rootSyncGitRepo.CommitAndPush("add namespace with ignore mutation"))
+	nt.Must(nt.WatchForAllSyncs())
+
+	nt.T.Log("Verify namespace is synced with initial label and annotation")
+	nt.Must(nt.Watcher.WatchObject(kinds.Namespace(), "test-namespace", "",
+		testwatcher.WatchPredicates(
+			testpredicates.HasLabel("foo", "bar"),
+			testpredicates.HasAnnotation(metadata.LifecycleMutationAnnotation, metadata.IgnoreMutation),
+		)))
+
+	// Step 3: Simulate a second controller updating the object
+	nt.T.Log("Update label foo to baz using kubectl (simulating second controller)")
+	_, err := nt.Shell.Kubectl("label", "--overwrite", "namespace", "test-namespace", "foo=baz")
+	if err != nil {
+		nt.T.Fatalf("failed to update label using kubectl: %v", err)
+	}
+
+	nt.T.Log("Verify label is updated on the cluster")
+	nt.Must(nt.Watcher.WatchObject(kinds.Namespace(), "test-namespace", "",
+		testwatcher.WatchPredicates(testpredicates.HasLabel("foo", "baz"))))
+
+	// Step 4: Trigger a Config Sync reconciliation
+	nt.T.Log("Add another namespace to trigger reconciliation")
+	anotherNs := k8sobjects.NamespaceObject("another-ns")
+	nt.Must(rootSyncGitRepo.Add("acme/another-ns.yaml", anotherNs))
+	nt.Must(rootSyncGitRepo.CommitAndPush("add another namespace to trigger sync"))
+	nt.Must(nt.WatchForAllSyncs())
+
+	// Step 5: Verify the outcome
+	nt.T.Log("Verify that the label foo=baz is preserved and not reverted by Config Sync")
+	nt.Must(nt.Watcher.WatchObject(kinds.Namespace(), "test-namespace", "",
+		testwatcher.WatchPredicates(
+			testpredicates.HasLabel("foo", "baz"), // Should remain baz
+			testpredicates.HasAnnotation(metadata.LifecycleMutationAnnotation, metadata.IgnoreMutation),
+		)))
+
+	// Cleanup the test resources
+	nt.T.Log("Cleaning up test resources")
+	nt.Must(rootSyncGitRepo.Remove("acme/ns-test-ignore-mutation.yaml"))
+	nt.Must(rootSyncGitRepo.Remove("acme/another-ns.yaml"))
+	nt.Must(rootSyncGitRepo.CommitAndPush("cleanup test resources"))
+	nt.Must(nt.WatchForAllSyncs())
+	nt.Must(nt.Watcher.WatchForNotFound(kinds.Namespace(), "test-namespace", ""))
+	nt.Must(nt.Watcher.WatchForNotFound(kinds.Namespace(), "another-ns", ""))
+}

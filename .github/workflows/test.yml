@@ -6,6 +6,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: List files in the repository
+        env:
+            GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           ls ${{ github.workspace }}
           echo "A tag was created!"
+          gh issue list 

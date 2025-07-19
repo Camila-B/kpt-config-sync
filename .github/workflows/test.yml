@@ -5,6 +5,8 @@ jobs:
   Explore-GitHub-Actions:
     runs-on: ubuntu-latest
     steps:
+      - name: Check out repository code
+        uses: actions/checkout@v4
       - name: List files in the repository
         env:
             GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

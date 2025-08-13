@@ -65,7 +65,7 @@ const (
 // bug report
 type BugReporter struct {
 	client    client.Reader
-	clientSet *kubernetes.Clientset
+	clientSet kubernetes.Interface
 	cm        *unstructured.Unstructured
 	enabled   map[Product]bool
 	util.ConfigManagementClient
@@ -79,7 +79,7 @@ type BugReporter struct {
 }
 
 // New creates a new BugReport
-func New(ctx context.Context, c client.Client, cs *kubernetes.Clientset) (*BugReporter, error) {
+func New(ctx context.Context, c client.Client, cs kubernetes.Interface) (*BugReporter, error) {
 	cm := &unstructured.Unstructured{}
 	cm.SetGroupVersionKind(schema.GroupVersionKind{
 		Group: configmanagement.GroupName,
@@ -95,11 +95,9 @@ func New(ctx context.Context, c client.Client, cs *kubernetes.Clientset) (*BugRe
 	}
 
 	if err := c.Get(ctx, types.NamespacedName{Name: util.ConfigManagementName}, cm); err != nil {
-		if meta.IsNoMatchError(err) {
-			fmt.Println("kind <<" + configmanagement.OperatorKind + ">> is not registered with the cluster")
-		} else if errors.IsNotFound(err) {
+		if errors.IsNotFound(err) {
 			fmt.Println("ConfigManagement object not found")
-		} else {
+		} else if !meta.IsNoMatchError(err) {
 			errorList = append(errorList, err)
 		}
 	}
@@ -274,7 +272,7 @@ type resourcesToReadables func(*unstructured.UnstructuredList, string) []Readabl
 // fetchResources provides a set of Readables for resources with a given group and version
 // toReadables: the function that converts the resources to readables.
 func (b *BugReporter) fetchResources(ctx context.Context, gv schema.GroupVersion, toReadables resourcesToReadables) (rd []Readable) {
-	rl, err := b.clientSet.ServerResourcesForGroupVersion(gv.String())
+	rl, err := b.clientSet.Discovery().ServerResourcesForGroupVersion(gv.String())
 	if err != nil {
 		if errors.IsNotFound(err) {
 			fmt.Printf("No %s resources found on cluster\n", gv.Group)

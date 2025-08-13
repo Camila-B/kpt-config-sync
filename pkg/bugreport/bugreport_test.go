@@ -25,12 +25,9 @@ import (
 	"github.com/google/go-cmp/cmp"
 	v1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/meta"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/kubernetes/fake"
 	"kpt.dev/configsync/cmd/nomos/util"
-	"kpt.dev/configsync/pkg/api/configmanagement"
+	"kpt.dev/configsync/pkg/api/configsync"
 	"kpt.dev/configsync/pkg/client/restconfig"
 	"kpt.dev/configsync/pkg/core"
 	"kpt.dev/configsync/pkg/core/k8sobjects"
@@ -112,62 +109,27 @@ func TestAssembleLogSources(t *testing.T) {
 }
 
 func TestNewBugReporter(t *testing.T) {
-	cmObj := &unstructured.Unstructured{
-		Object: map[string]interface{}{
-			"apiVersion": configmanagement.GroupName + "/v1",
-			"kind":       configmanagement.OperatorKind,
-			"metadata": map[string]interface{}{
-				"name": util.ConfigManagementName,
-			},
-			"spec": map[string]interface{}{
-				"enableMultiRepo": true,
-			},
-		},
-	}
-
-	emptyCMObj := &unstructured.Unstructured{}
-	emptyCMObj.SetGroupVersionKind(schema.GroupVersionKind{
-		Group:   configmanagement.GroupName,
-		Version: "v1",
-		Kind:    configmanagement.OperatorKind,
-	})
+	rmObj := k8sobjects.DeploymentObject(core.Namespace(configsync.ControllerNamespace), core.Name(util.ReconcilerManagerName))
 
 	tests := []struct {
-		name          string
-		k8sContext    string
-		contextErr    error
-		client        client.Client
-		wantCM        *unstructured.Unstructured
-		wantErrorList []error
+		name              string
+		k8sContext        string
+		contextErr        error
+		client            client.Client
+		configSyncEnabled bool
+		wantErrorList     []error
 	}{
 		{
-			name:       "success",
-			k8sContext: "test-context",
-			client:     fakeclient.NewClientBuilder().WithScheme(core.Scheme).WithObjects(cmObj).Build(),
-			wantCM:     cmObj,
+			name:              "success",
+			k8sContext:        "test-context",
+			client:            fakeclient.NewClientBuilder().WithScheme(core.Scheme).WithObjects(rmObj).Build(),
+			configSyncEnabled: true,
 		},
 		{
-			name:       "ConfigManagement object not found",
-			k8sContext: "test-context",
-			client:     fakeclient.NewClientBuilder().WithScheme(core.Scheme).Build(),
-			wantCM:     emptyCMObj,
-		},
-		{
-			name:       "ConfigManagement CRD not found",
-			k8sContext: "test-context",
-			client: fakeclient.NewClientBuilder().WithScheme(core.Scheme).WithInterceptorFuncs(
-				interceptor.Funcs{
-					Get: func(_ context.Context, _ client.WithWatch, _ client.ObjectKey, _ client.Object, _ ...client.GetOption) error {
-						return &meta.NoKindMatchError{
-							GroupKind: schema.GroupKind{
-								Group: configmanagement.GroupName,
-								Kind:  configmanagement.OperatorKind,
-							},
-							SearchedVersions: []string{"v1"},
-						}
-					},
-				}).Build(),
-			wantCM: emptyCMObj,
+			name:              "reconciler-manager deployment not found",
+			k8sContext:        "test-context",
+			client:            fakeclient.NewClientBuilder().WithScheme(core.Scheme).Build(),
+			configSyncEnabled: false,
 		},
 		{
 			name:       "generic error on Get",
@@ -178,15 +140,13 @@ func TestNewBugReporter(t *testing.T) {
 						return apierrors.NewInternalError(errors.New("generic Get error"))
 					},
 				}).Build(),
-			wantCM:        emptyCMObj,
 			wantErrorList: []error{apierrors.NewInternalError(errors.New("generic Get error"))},
 		},
 		{
 			name:          "error getting k8s context",
 			k8sContext:    "",
 			contextErr:    errors.New("context error"),
-			client:        fakeclient.NewClientBuilder().WithScheme(core.Scheme).WithObjects(cmObj).Build(),
-			wantCM:        cmObj,
+			client:        fakeclient.NewClientBuilder().WithScheme(core.Scheme).WithObjects(rmObj).Build(),
 			wantErrorList: []error{errors.New("context error")},
 		},
 	}
@@ -201,10 +161,6 @@ func TestNewBugReporter(t *testing.T) {
 			br, err := New(context.Background(), tt.client, cs)
 			if err != nil {
 				t.Fatalf("New() returned an unexpected error: %v", err)
-			}
-
-			if diff := cmp.Diff(tt.wantCM.Object, br.cm.Object); diff != "" {
-				t.Errorf("BugReporter.cm diff (-want +got):\n%s", diff)
 			}
 
 			if diff := cmp.Diff(tt.k8sContext, br.k8sContext); diff != "" {

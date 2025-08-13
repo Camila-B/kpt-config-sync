@@ -27,6 +27,7 @@ import (
 	"strings"
 	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -42,6 +43,7 @@ import (
 	"kpt.dev/configsync/cmd/nomos/version"
 	"kpt.dev/configsync/pkg/api/configmanagement"
 	v1 "kpt.dev/configsync/pkg/api/configmanagement/v1"
+	"kpt.dev/configsync/pkg/api/configsync"
 	"kpt.dev/configsync/pkg/api/configsync/v1beta1"
 	"kpt.dev/configsync/pkg/api/kpt.dev/v1alpha1"
 	"kpt.dev/configsync/pkg/client/restconfig"
@@ -64,10 +66,10 @@ const (
 // BugReporter handles basic data gathering tasks for generating a
 // bug report
 type BugReporter struct {
-	client    client.Reader
-	clientSet kubernetes.Interface
-	cm        *unstructured.Unstructured
-	enabled   map[Product]bool
+	client            client.Reader
+	clientSet         kubernetes.Interface
+	configSyncEnabled bool
+	enabled           map[Product]bool
 	util.ConfigManagementClient
 	k8sContext string
 	// report file
@@ -94,21 +96,19 @@ func New(ctx context.Context, c client.Client, cs kubernetes.Interface) (*BugRep
 		errorList = append(errorList, err)
 	}
 
-	if err := c.Get(ctx, types.NamespacedName{Name: util.ConfigManagementName}, cm); err != nil {
-		if errors.IsNotFound(err) {
-			fmt.Println("ConfigManagement object not found")
-		} else if !meta.IsNoMatchError(err) {
-			errorList = append(errorList, err)
-		}
+	deployment := &appsv1.Deployment{}
+
+	if err := c.Get(ctx, types.NamespacedName{Name: util.ReconcilerManagerName, Namespace: configsync.ControllerNamespace}, deployment); err != nil {
+		errorList = append(errorList, err)
 	}
 
 	return &BugReporter{
-		client:        c,
-		clientSet:     cs,
-		cm:            cm,
-		k8sContext:    currentk8sContext,
-		ErrorList:     errorList,
-		WritingErrors: []error{},
+		client:            c,
+		clientSet:         cs,
+		configSyncEnabled: err == nil,
+		k8sContext:        currentk8sContext,
+		ErrorList:         errorList,
+		WritingErrors:     []error{},
 	}, nil
 }
 
@@ -117,27 +117,8 @@ func (b *BugReporter) EnabledServices() map[Product]bool {
 	if b.enabled == nil {
 		enabled := make(map[Product]bool)
 
-		// Same for Config Sync, though here the "disabled" condition is if enableMultiRepo is true or if the git
-		// config is "empty", which involves looking for an empty proxy config
-		configSyncEnabled := false
-		enableMultiRepo, _, _ := unstructured.NestedBool(b.cm.Object, "spec", "enableMultiRepo")
-		if enableMultiRepo {
-			configSyncEnabled = true
-		} else {
-			syncGitCfg, _, _ := unstructured.NestedMap(b.cm.Object, "spec", "git")
-			for k := range syncGitCfg {
-				if k != "proxy" {
-					configSyncEnabled = true
-				}
-			}
-			proxy, _, _ := unstructured.NestedMap(syncGitCfg, "proxy")
-			if len(proxy) > 0 {
-				configSyncEnabled = true
-			}
-		}
-
-		enabled[ConfigSync] = configSyncEnabled
-		enabled[ResourceGroup] = enableMultiRepo
+		enabled[ConfigSync] = b.configSyncEnabled
+		enabled[ResourceGroup] = b.configSyncEnabled
 		enabled[ConfigSyncMonitoring] = true
 		b.enabled = enabled
 	}

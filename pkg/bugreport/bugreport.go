@@ -97,15 +97,17 @@ func New(ctx context.Context, c client.Client, cs kubernetes.Interface) (*BugRep
 	}
 
 	deployment := &appsv1.Deployment{}
+	configSyncEnabled := true
 
 	if err := c.Get(ctx, types.NamespacedName{Name: util.ReconcilerManagerName, Namespace: configsync.ControllerNamespace}, deployment); err != nil {
 		errorList = append(errorList, err)
+		configSyncEnabled = false
 	}
 
 	return &BugReporter{
 		client:            c,
 		clientSet:         cs,
-		configSyncEnabled: err == nil,
+		configSyncEnabled: configSyncEnabled,
 		k8sContext:        currentk8sContext,
 		ErrorList:         errorList,
 		WritingErrors:     []error{},

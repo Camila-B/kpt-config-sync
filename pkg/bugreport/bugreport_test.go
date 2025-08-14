@@ -29,6 +29,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	fakediscovery "k8s.io/client-go/discovery/fake"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
@@ -143,6 +144,9 @@ func TestNewBugReporter(t *testing.T) {
 			k8sContext:        "test-context",
 			client:            fakeclient.NewClientBuilder().WithScheme(core.Scheme).Build(),
 			configSyncEnabled: false,
+			wantErrorList: []error{
+				apierrors.NewNotFound(schema.GroupResource{Group: "apps", Resource: "deployments"}, util.ReconcilerManagerName),
+			},
 		},
 		{
 			name:       "generic error on Get",
@@ -236,7 +240,7 @@ func TestFetchLogSources(t *testing.T) {
 		{
 			name:         "no components enabled",
 			client:       fakeclient.NewClientBuilder().WithScheme(core.Scheme).Build(),
-			wantErrCount: 4,
+			wantErrCount: 2,
 		},
 		{
 			name: "log fetch error",

@@ -127,7 +127,6 @@ func (b *BugReporter) EnabledServices() map[Product]bool {
 }
 
 // FetchLogSources provides a set of Readables for all of nomos' container logs
-// TODO: Still need to figure out a good way to test this
 func (b *BugReporter) FetchLogSources(ctx context.Context) []Readable {
 	var toBeLogged logSources
 
@@ -272,7 +271,7 @@ func (b *BugReporter) fetchResources(ctx context.Context, gv schema.GroupVersion
 			u := &unstructured.UnstructuredList{}
 			u.SetGroupVersionKind(schema.GroupVersionKind{
 				Group:   gv.Group,
-				Kind:    apiResource.SingularName,
+				Kind:    apiResource.Kind,
 				Version: gv.Version,
 			})
 			if err := b.client.List(ctx, u); err != nil {
